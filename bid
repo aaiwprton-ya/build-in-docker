@@ -1,0 +1,1754 @@
+#!/bin/bash
+
+return_path=$(pwd)
+cd $(dirname $0)
+this_path=$(pwd)
+
+## ------ SETENV SCRIPTS ------
+
+function setenv_print_help() {
+	echo "setenv - the command to set the path to libraries to an environment variable"
+	echo "Usage: ./bid setenv"
+	echo "Note: The value of the variable LD_LIBRARY_PATH will be set only for the current session (to get the global version, change .bashrc for a user variable, or change /etc/environment to get a system variable)"
+}
+
+function setenv() {
+	# Set environment variables (to get the global version, change .bashrc for a user variable, or change /etc/environment to get a system variable)
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$this_path/builds/lib
+	echo "[INFO] The value of the variable LD_LIBRARY_PATH=$LD_LIBRARY_PATH is set only for the current session (to get the global version, change .bashrc for a user variable, or change /etc/environment to get a system variable)"
+}
+
+## ------ BUILD SCRIPTS ------
+
+function build_print_help() {
+	echo "build - the command to run the build and install the project into the current build space"
+	echo "Usage: ./bid build [PROJECT_NAME]"
+}
+
+function add_dependent() {
+	local file="$1"
+	local text="$2"
+	
+	# Args validation
+	if ! [[ -f $file ]]; then
+		echo "[ERROR] $file is not exist"
+		return 1
+	fi
+	if [[ "$text" == "" ]]; then
+		echo "[ERROR] Text can't be empty"
+		return 2
+	fi
+	
+	local file_str=$(cat $file)
+	local isAdding="true"
+	
+	# Flipping strings
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo $file_str | cut -d ' ' -s -f $i)
+		# Exit condition
+		if [[ $dep == ''  ]]; then
+			if [[ $file_str == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$file_str
+			fi
+		fi
+		
+		if [[ $dep == $text ]]; then
+			isAdding="false"
+			break
+		fi
+	done
+	
+	# Adding if it's exclusive
+	if [[ "$isAdding" == "true" ]]; then
+		echo "$text" >> $file
+	fi
+	return 0
+}
+
+function build_project_with_dependencies() {
+	echo "<<< Begin building $1"
+	local project="$1"
+	local dependent="$2"
+	cd $this_path
+	
+	# Args validation
+	if [[ "$project" == "" ]]; then
+		echo "[ERROR] You need type a project name"
+		cd $this_path
+		return 1
+	fi
+	cd ./sources
+	if ! [[ -d "$project" ]]; then
+		echo "[ERROR] $project is not exist"
+		cd $this_path
+		return 1
+	fi
+	if [[ "$dependent" != "" ]]; then
+		if ! [[ -d "$dependent" ]]; then
+			echo "[ERROR] The dependent $dependent is not exist"
+			cd $this_path
+			return 1
+		else
+			cd $this_path/sources/"$project"
+			if ! [[ -f .dependent ]]; then
+				touch .dependent
+			fi
+			add_dependent $(pwd)/.dependent $dependent
+			if [[ "$?" != 0 ]]; then
+				echo "[ERROR] add_dependent returned an error code $?"
+				cd $this_path
+				return 1
+			else
+				echo "[INFO] Project $project was marked as dependent on $dependent"
+			fi
+			cd $this_path
+		fi
+	fi
+	cd $this_path/sources/"$project"
+	local this_project_dir=$(pwd)
+	
+	# Check dependencies
+	if [[ -f .dependencies ]]; then
+		local dep_file=$(cat .dependencies)
+	else
+		echo "[FAILED] The dependencies list file was not found in $project"
+		local dep_file=''
+	fi
+	if [[ $dep_file == '' ]]; then
+		echo "[INFO] No dependencies in $project"
+	fi
+	
+	# Flipping dependencies
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo $dep_file | cut -d ' ' -s -f $i)
+		# Exit condition
+		if [[ $dep == ''  ]]; then
+			if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$dep_file
+			fi
+		fi
+		
+		# Build dependence
+		build_project_with_dependencies $dep $project
+		if [[ "$?" == 1 ]]; then
+			echo "[FAILED] $dep was not builded"
+			cd $this_path
+			return 1
+		fi
+	done
+	
+	# Build this project
+	cd $this_project_dir
+	if [[ -f .isbuilded ]]; then
+		if [[ $(cat .isbuilded) == true ]]; then
+			echo "[INFO] $project is already builded"
+			touch ./.erasable
+			echo "false" > ./.erasable
+		elif [[ $(cat .isbuilded) == false ]]; then
+			./.build.sh
+			echo "[SUCCESS] $project was builded"
+			touch ./.erasable
+			echo "false" > ./.erasable
+		else
+			echo "[FAILED] It is impossible to determine whether the $project has been built. Check the .isbuilded file value. It should be true or false"
+			cd $this_path
+			return 1
+		fi
+	else
+		echo "[FAILED] The .isbuilded file is not exist. It is impossible to determine whether the $project has been built"
+		cd $this_path
+		return 1
+	fi
+	
+	# Install this project
+	cd $this_project_dir
+	if [[ -f .isinstalled ]]; then
+		if [[ $(cat .isinstalled) == true ]]; then
+			echo "[INFO] $project is already installed"
+			touch ./.erasable
+			echo "false" > ./.erasable
+		elif [[ $(cat .isinstalled) == false ]]; then
+			./.install.sh
+			echo "[SUCCESS] $project was installed"
+			touch ./.erasable
+			echo "false" > ./.erasable
+		else
+			echo "[FAILED] It is impossible to determine whether the $project has been installed. Check the .isinstalled file value. It should be true or false"
+			cd $this_path
+			return 1
+		fi
+	else
+		echo "[FAILED] The .isinstalled file is not exist. It is impossible to determine whether the $project has been installed"
+		cd $this_path
+		return 1
+	fi
+	
+	echo ">>> End building"
+	return 0
+}
+
+function build() {
+	local project="$1"
+	build_project_with_dependencies "$project"
+}
+
+## ------ CLEAR SCRIPTS ------
+
+function clear_print_help() {
+	echo "clear - the command to uninstall the assembled project and clean it to the state of the source files"
+	echo "Usage: ./bid clear [PROJECT_NAME] [MODE]"
+	echo "Note: mode can have soft and hard values, the default is soft. In hard mode, the dependencies of a given project will also be cleared if no other projects depend on them"
+}
+
+function clear_project_with_dependencies() {
+	echo "<<< Begin cleaning $1"
+	local project="$1"
+	local flag="$2"
+	local dependent="$3"
+	cd $this_path
+	
+	# Args validation
+	if [[ "$flag" == "" ]]; then
+		echo "[WARNING] As the cleaning flag was not determine it will be a soft mode"
+		flag="soft"
+	elif [[ "$flag" != "soft" && "$flag" != "hard" ]]; then
+		echo "[ERROR] The second argument must be a cleaning flag with value soft or hard"
+		cd $this_path
+		return 1
+	fi
+	if [[ "$project" == "" ]]; then
+		echo "[ERROR] You need type a project name"
+		cd $this_path
+		return 1
+	fi
+	cd ./sources
+	if ! [[ -d "$project" ]]; then
+		echo "[ERROR] $project is not exist"
+		cd $this_path
+		return 1
+	fi
+	if [[ "$dependent" != "" ]]; then
+		if ! [[ -d "$dependent" ]]; then
+			echo "[ERROR] $dependent is not exist"
+			cd $this_path
+			return 1
+		fi
+	fi
+	cd ./"$project"
+	local this_project_dir=$(pwd)
+	
+	# Check if this project is builded
+	if [[ -f .isbuilded ]]; then
+		local isbuild=$(cat .isbuilded)
+		if [[ "$isbuild" != 'true' ]]; then
+			echo "[ERROR] The project $project is not builded"
+			return 1
+		fi
+	else
+		echo "[FAILED] The .isbuilded file was not found in $project"
+		return 1
+	fi
+	
+	# Check dependencies
+	if [[ -f .dependencies ]]; then
+		local dep_file=$(cat .dependencies)
+	else
+		echo "[FAILED] The dependencies list file was not found in $project"
+		local dep_file=''
+	fi
+	if [[ $dep_file == '' ]]; then
+		echo "[WARNING] No dependencies in $project"
+	fi
+	
+	# Flipping dependencies
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo $dep_file | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $dep == ''  ]]; then
+			if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$dep_file
+			fi
+		fi
+		
+		# Clear dependence
+		clear_project_with_dependencies $dep $flag $project
+		if [[ "$?" != 0 ]]; then
+			echo "[FAILED] $dep was not cleared"
+			continue
+		fi
+	done
+	
+	# Check is this project must be removed
+	cd $this_project_dir
+	if [[ "$dependent" != "" ]]; then
+		# Check dependents
+		if [[ -f .dependent ]]; then
+			local dep_file=$(cat .dependent)
+		else
+			echo "[FAILED] The dependent list file was not found in $project"
+			local dep_file=''
+		fi
+		if [[ $dep_file == '' ]]; then
+			echo "[WARNING] No dependent in $project"
+		fi
+		
+		# Flipping dependents to unmark it for current dependent
+		local i
+		for (( i = 1 ; ; i++ )); do
+			local dep=$(echo $dep_file | cut -d ' ' -s -f $i)
+			
+			# Exit condition
+			if [[ $dep == ''  ]]; then
+				if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+					break;
+				else
+					dep=$dep_file
+				fi
+			fi
+			
+			# Unmark dependent
+			if [[ "$dep" == "$dependent" ]]; then
+				echo "[SUCCESS] $dep was unmark for $project"
+				local cmdargs=$(printf "%dd" $i)
+				sed -i "$cmdargs" ./.dependent
+				break
+			fi
+		done
+		
+		# Check is dependents empty and mode is hard
+		local dep_file=$(cat .dependent)
+		local target_file=$(cat .istarget)
+		if [[ $dep_file == '' && $target_file == 'false' && "$flag" == "hard" ]]; then
+			echo "[SUCCESS] $project was marked as erasable"
+			echo "true" > ./.erasable
+		fi
+	else
+		# Check is dependents empty
+		local dep_file=$(cat .dependent)
+		if [[ $dep_file != '' ]]; then
+			echo "[WARNING] Dependents for $project is not empty but $project will marked as erasable anyway"
+		fi
+		echo "true" > ./.erasable
+		flag="hard"
+	fi
+	
+	# Clear this project if hard mode
+	if [[ "$flag" == "hard" ]]; then
+		cd $this_project_dir
+		if [[ -f .erasable ]]; then
+			if [[ $(cat .erasable) == true ]]; then
+				./.clear.sh
+				echo "[SUCCESS] $project was cleared"
+			elif [[ $(cat .erasable) == false ]]; then
+				echo "[INFO] The project $project was not cleared because it was not marked as erasable"
+			else
+				echo "[FAILED] It is impossible to determine whether the $project has been marked as erasable. Check the .erasable file value. It should be true or false"
+				cd $this_path
+				return 1
+			fi
+		else
+			echo "[FAILED] The .erasable file is not exist. It is impossible to determine whether the $project has been marked as erasable"
+			cd $this_path
+			return 1
+		fi
+	fi
+	
+	echo ">>> End cleaning"
+	return 0
+}
+
+function clear() {
+	local project="$1"
+	local flag="$2"
+	clear_project_with_dependencies "$project" "$flag"
+}
+
+## ------ CREATE SCRIPTS ------
+
+function create_print_help() {
+	echo "create - the command to initialize a new project"
+	echo "Usage: ./bid create [PROJECT_NAME]"
+	echo "Note: this will create a project template, you will need to add your source files to the ./sources/PROJECT_NAME/sources/PROJECT_NAME directory, and also configure the build and cleanup of the project in the auto_build.sh and auto_remove.sh scripts, configure the docker container to build in the Dockerfile. The auto_build.sh script will be run inside a docker container, in which the following directories will be available to you:"
+	echo "	/home/worker/workroom/sources - literally the ./sources/PROJECT_NAME/sources directory inside the docker container;"
+	echo "	/home/worker/workroom/dependencies/include - header files of projects in the current build space (./builds/include);"
+	echo "	/home/worker/workroom/dependencies/lib - library files of projects in the current build space (./builds/lib);"
+	echo "	/home/worker/workroom/builds - directory for build artifacts, here you can create any internal structure;"
+	echo "	/home/worker/workroom/installations/bin - directory for the final executable binary files;"
+	echo "	/home/worker/workroom/installations/include - directory for the final header files;"
+	echo "	/home/worker/workroom/installations/lib - directory for the final library files;"
+	echo "	/home/worker/workroom/installations/share - directory for other files that should be distributed with your project."
+	echo "Take these paths into account when writing the auto_build.sh script."
+}
+
+function create_project() {
+	echo "<<< Begin creatig project"
+	local name="$1"
+	cd $this_path
+	
+	# Args validation
+	if [[ "$name" == '' ]]; then
+		echo "[ERROR] invalid name"
+		return 1
+	fi
+	
+	local name_lowercase=$(echo "$name" | awk '{print tolower($0)}')
+	
+	if [[ -d ./sources/"$name"/ ]]; then
+		echo "[WARNING] The project "$name" is already exist"
+	else
+		mkdir -p ./sources/"$name"/sources/"$name"
+		
+		touch ./sources/"$name"/sources/auto_build.sh
+		chmod +x ./sources/"$name"/sources/auto_build.sh
+		
+		echo "#!/bin/bash" >> ./sources/"$name"/sources/auto_build.sh
+		echo "" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# Notes" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# Source dir:" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# ./'project_name'" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# Build dir:" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# /home/worker/workroom/builds" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# Instalations dirs:" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# /home/worker/workroom/installations/bin" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# /home/worker/workroom/installations/include" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# /home/worker/workroom/installations/lib" >> ./sources/"$name"/sources/auto_build.sh
+		echo "# /home/worker/workroom/installations/share" >> ./sources/"$name"/sources/auto_build.sh
+		
+		touch ./sources/"$name"/sources/auto_remove.sh
+		chmod +x ./sources/"$name"/sources/auto_remove.sh
+		
+		echo "#!/bin/bash" >> ./sources/"$name"/sources/auto_remove.sh
+		echo "" >> ./sources/"$name"/sources/auto_remove.sh
+		echo "# Notes" >> ./sources/"$name"/sources/auto_remove.sh
+		echo "# Clear build dir:" >> ./sources/"$name"/sources/auto_remove.sh
+		echo "# /home/worker/workroom/builds" >> ./sources/"$name"/sources/auto_remove.sh
+		
+		touch ./sources/"$name"/.build.sh
+		chmod +x ./sources/"$name"/.build.sh
+		
+		echo '#!/bin/bash' >> ./sources/"$name"/.build.sh
+		echo '' >>  ./sources/"$name"/.build.sh
+		echo 'cd $(dirname "$0")' >> ./sources/"$name"/.build.sh
+		echo 'this_path=$(pwd)' >> ./sources/"$name"/.build.sh
+		echo 'cd ../../builds' >> ./sources/"$name"/.build.sh
+		echo 'host_builds=$(pwd)' >> ./sources/"$name"/.build.sh
+		echo 'cd $this_path' >> ./sources/"$name"/.build.sh
+		echo 'mkdir -p builds installations' >> ./sources/"$name"/.build.sh
+		echo docker build -t docker-builder-"$name_lowercase" ./ >> ./sources/"$name"/.build.sh
+		echo 'docker run --rm -v $(pwd)/sources:/home/worker/workroom/sources \' >> ./sources/"$name"/.build.sh
+		echo '	-v $(pwd)/builds:/home/worker/workroom/builds \' >> ./sources/"$name"/.build.sh
+		echo '	-v $(pwd)/installations:/home/worker/workroom/installations \' >> ./sources/"$name"/.build.sh
+		echo "	-v \$host_builds:/home/worker/workroom/dependencies docker-builder-$name_lowercase" >> ./sources/"$name"/.build.sh
+		echo "docker rmi docker-builder-$name_lowercase" >> ./sources/"$name"/.build.sh
+		echo 'cd $this_path' >> ./sources/"$name"/.build.sh
+		echo 'touch ./.isbuilded' >> ./sources/"$name"/.build.sh
+		echo 'echo "true" > ./.isbuilded' >> ./sources/"$name"/.build.sh
+		
+		touch ./sources/"$name"/.clear.sh
+		chmod +x ./sources/"$name"/.clear.sh
+
+		echo '#!/bin/bash' >>  ./sources/"$name"/.clear.sh
+		echo '' >>  ./sources/"$name"/.clear.sh
+		echo 'return_path=$(pwd)' >> ./sources/"$name"/.clear.sh
+		echo 'cd $(dirname "$0")' >> ./sources/"$name"/.clear.sh
+		echo 'this_path=$(pwd)' >> ./sources/"$name"/.clear.sh
+		echo './.uninstall.sh' >> ./sources/"$name"/.clear.sh
+		echo 'cd ./installations' >> ./sources/"$name"/.clear.sh
+		echo 'rm -rfv ./*' >> ./sources/"$name"/.clear.sh
+		echo 'cd ../builds' >> ./sources/"$name"/.clear.sh
+		echo 'rm -rfv ./*' >> ./sources/"$name"/.clear.sh
+		echo 'cd ../sources' >> ./sources/"$name"/.clear.sh
+		echo './auto_remove.sh' >> ./sources/"$name"/.clear.sh
+		echo 'cd $this_path' >> ./sources/"$name"/.clear.sh
+		echo 'touch ./.isbuilded' >> ./sources/"$name"/.clear.sh
+		echo 'echo "false" > ./.isbuilded' >> ./sources/"$name"/.clear.sh
+		echo 'cd $return_path' >> ./sources/"$name"/.clear.sh
+
+		touch ./sources/"$name"/.install.sh
+		chmod +x ./sources/"$name"/.install.sh
+		
+		echo '#!/bin/bash' >> ./sources/"$name"/.install.sh
+		echo '' >> ./sources/"$name"/.install.sh
+		echo 'return_path=$(pwd)' >> ./sources/"$name"/.install.sh
+		echo 'cd $(dirname "$0")' >> ./sources/"$name"/.install.sh
+		echo 'cd ./installations' >> ./sources/"$name"/.install.sh
+		echo 'this_path=$(pwd)' >> ./sources/"$name"/.install.sh
+		echo 'cd ../../../builds' >> ./sources/"$name"/.install.sh
+		echo 'target_path=$(pwd)' >> ./sources/"$name"/.install.sh
+		echo '' >> ./sources/"$name"/.install.sh
+		echo 'function move_files() {' >> ./sources/"$name"/.install.sh
+		echo '	echo "<<< Installing from $1"' >> ./sources/"$name"/.install.sh
+		echo '	local from=$1' >> ./sources/"$name"/.install.sh
+		echo '	local to=$2' >> ./sources/"$name"/.install.sh
+		echo '	cd $from' >> ./sources/"$name"/.install.sh
+		echo '	touch .fl .dl' >> ./sources/"$name"/.install.sh
+		echo '	> .fl' >> ./sources/"$name"/.install.sh
+		echo '	> .dl' >> ./sources/"$name"/.install.sh
+		echo '	for fullname in "$from"/*; do' >> ./sources/"$name"/.install.sh
+		echo '		local filename="${fullname##*/}"' >> ./sources/"$name"/.install.sh
+		echo '		if [[ "$filename" == .fl ]]; then' >> ./sources/"$name"/.install.sh
+		echo '			continue' >> ./sources/"$name"/.install.sh
+		echo '		elif [[ "$filename" == .dl ]]; then' >> ./sources/"$name"/.install.sh
+		echo '			continue' >> ./sources/"$name"/.install.sh
+		echo '		elif [[ -d "$fullname" ]]; then' >> ./sources/"$name"/.install.sh
+		echo '			mkdir -p $to/$filename' >> ./sources/"$name"/.install.sh
+		echo '			echo "$filename" >> .dl' >> ./sources/"$name"/.install.sh
+		echo '			move_files $fullname $to/$filename' >> ./sources/"$name"/.install.sh
+		echo '			cd $from' >> ./sources/"$name"/.install.sh
+		echo '			echo "[SUCCESS] $filename was installed to $to"' >> ./sources/"$name"/.install.sh
+		echo '		elif [[ -f "$fullname" ]]; then' >> ./sources/"$name"/.install.sh
+		echo '			echo "[SUCCESS] $filename was installed to $to"' >> ./sources/"$name"/.install.sh
+		echo '			echo "$filename" >> .fl' >> ./sources/"$name"/.install.sh
+		echo '			cp $fullname $to' >> ./sources/"$name"/.install.sh
+		echo '		else' >> ./sources/"$name"/.install.sh
+		echo '			echo "[FAILED] $fullname is not valid"' >> ./sources/"$name"/.install.sh
+		echo '		fi' >> ./sources/"$name"/.install.sh
+		echo '	done' >> ./sources/"$name"/.install.sh
+		echo '	echo ">>> End"' >> ./sources/"$name"/.install.sh
+		echo '}' >> ./sources/"$name"/.install.sh
+		echo '' >> ./sources/"$name"/.install.sh
+		echo 'move_files $this_path/bin $target_path/bin' >> ./sources/"$name"/.install.sh
+		echo 'move_files $this_path/include $target_path/include' >> ./sources/"$name"/.install.sh
+		echo 'move_files $this_path/lib $target_path/lib' >> ./sources/"$name"/.install.sh
+		echo 'move_files $this_path/share $target_path/share' >> ./sources/"$name"/.install.sh
+		echo '' >> ./sources/"$name"/.install.sh
+		echo 'cd $this_path' >> ./sources/"$name"/.install.sh
+		echo 'cd ../' >> ./sources/"$name"/.install.sh
+		echo 'touch ./.isinstalled' >> ./sources/"$name"/.install.sh
+		echo 'echo "true" > ./.isinstalled' >> ./sources/"$name"/.install.sh
+		echo '' >> ./sources/"$name"/.install.sh
+		echo 'cd $return_path' >> ./sources/"$name"/.install.sh
+		
+		touch ./sources/"$name"/.uninstall.sh
+		chmod +x ./sources/"$name"/.uninstall.sh
+		
+		echo '#!/bin/bash' >> ./sources/"$name"/.uninstall.sh
+		echo '' >> ./sources/"$name"/.uninstall.sh
+		echo 'return_path=$(pwd)' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd $(dirname "$0")' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd ./installations' >> ./sources/"$name"/.uninstall.sh
+		echo 'this_path=$(pwd)' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd ../../../builds' >> ./sources/"$name"/.uninstall.sh
+		echo 'target_path=$(pwd)' >> ./sources/"$name"/.uninstall.sh
+		echo '' >> ./sources/"$name"/.uninstall.sh
+		echo 'function remove_files() {' >> ./sources/"$name"/.uninstall.sh
+		echo '	echo "<<< Uninstalling for $1"' >> ./sources/"$name"/.uninstall.sh
+		echo '	local from=$1' >> ./sources/"$name"/.uninstall.sh
+		echo '	local to=$2' >> ./sources/"$name"/.uninstall.sh
+		echo '	cd $from' >> ./sources/"$name"/.uninstall.sh
+		echo '	' >> ./sources/"$name"/.uninstall.sh
+		echo '	# Get file labels' >> ./sources/"$name"/.uninstall.sh
+		echo '	if [[ -f .fl ]]; then' >> ./sources/"$name"/.uninstall.sh
+		echo '		local files=$(cat .fl)' >> ./sources/"$name"/.uninstall.sh
+		echo '	else' >> ./sources/"$name"/.uninstall.sh
+		echo '		echo "[FAILED] The labels list file was not found in $from"' >> ./sources/"$name"/.uninstall.sh
+		echo "		local files=''" >> ./sources/"$name"/.uninstall.sh
+		echo '	fi' >> ./sources/"$name"/.uninstall.sh
+		echo "	if [[ \$files == '' ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo '		echo "[WARNING] No file labels in $from"' >> ./sources/"$name"/.uninstall.sh
+		echo '	fi' >> ./sources/"$name"/.uninstall.sh
+		echo '	# Get dir labels' >> ./sources/"$name"/.uninstall.sh
+		echo '	if [[ -f .dl ]]; then' >> ./sources/"$name"/.uninstall.sh
+		echo '		local dirs=$(cat .dl)' >> ./sources/"$name"/.uninstall.sh
+		echo '	else' >> ./sources/"$name"/.uninstall.sh
+		echo '		echo "[FAILED] The labels list dir was not found in $from"' >> ./sources/"$name"/.uninstall.sh
+		echo "		local dirs=''" >> ./sources/"$name"/.uninstall.sh
+		echo '	fi' >> ./sources/"$name"/.uninstall.sh
+		echo "	if [[ \$dirs == '' ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo '		echo "[WARNING] No dir labels in $from"' >> ./sources/"$name"/.uninstall.sh
+		echo '	fi' >> ./sources/"$name"/.uninstall.sh
+		echo '	' >> ./sources/"$name"/.uninstall.sh
+		echo '	# Flipping file labels' >> ./sources/"$name"/.uninstall.sh
+		echo '	for (( i = 1 ; ; i++ )); do' >> ./sources/"$name"/.uninstall.sh
+		echo "		local file=\$(echo \$files | cut -d ' ' -s -f \$i)" >> ./sources/"$name"/.uninstall.sh
+		echo '		' >> ./sources/"$name"/.uninstall.sh
+		echo '		# Exit condition' >> ./sources/"$name"/.uninstall.sh
+		echo "		if [[ \$file == ''  ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo "			if [[ \$files == '' ]] || [[ \$i > 1 ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo '				break;' >> ./sources/"$name"/.uninstall.sh
+		echo '			else' >> ./sources/"$name"/.uninstall.sh
+		echo '				file=$files' >> ./sources/"$name"/.uninstall.sh
+		echo '			fi' >> ./sources/"$name"/.uninstall.sh
+		echo '		fi' >> ./sources/"$name"/.uninstall.sh
+		echo '		' >> ./sources/"$name"/.uninstall.sh
+		echo '		# Uninstall file' >> ./sources/"$name"/.uninstall.sh
+		echo '		local fullname="$to"/"$file"' >> ./sources/"$name"/.uninstall.sh
+		echo '		if [[ -f "$fullname" ]]; then' >> ./sources/"$name"/.uninstall.sh
+		echo '			echo "[SUCCESS] $file was uninstalled from $to"' >> ./sources/"$name"/.uninstall.sh
+		echo '			rm $fullname' >> ./sources/"$name"/.uninstall.sh
+		echo '		else' >> ./sources/"$name"/.uninstall.sh
+		echo '			echo "[FAILED] $fullname is not exist"' >> ./sources/"$name"/.uninstall.sh
+		echo '		fi' >> ./sources/"$name"/.uninstall.sh
+		echo '	done' >> ./sources/"$name"/.uninstall.sh
+		echo '	' >> ./sources/"$name"/.uninstall.sh
+		echo '	# Flipping dir labels' >> ./sources/"$name"/.uninstall.sh
+		echo '	for (( i = 1 ; ; i++ )); do' >> ./sources/"$name"/.uninstall.sh
+		echo "		local dir=\$(echo \$dirs | cut -d ' ' -s -f \$i)" >> ./sources/"$name"/.uninstall.sh
+		echo '		' >> ./sources/"$name"/.uninstall.sh
+		echo '		# Exit condition' >> ./sources/"$name"/.uninstall.sh
+		echo "		if [[ \$dir == ''  ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo "			if [[ \$dirs == '' ]] || [[ \$i > 1 ]]; then" >> ./sources/"$name"/.uninstall.sh
+		echo '				break;' >> ./sources/"$name"/.uninstall.sh
+		echo '			else' >> ./sources/"$name"/.uninstall.sh
+		echo '				dir=$dirs' >> ./sources/"$name"/.uninstall.sh
+		echo '			fi' >> ./sources/"$name"/.uninstall.sh
+		echo '		fi' >> ./sources/"$name"/.uninstall.sh
+		echo '		' >> ./sources/"$name"/.uninstall.sh
+		echo '		# Recursive uninstall dirs' >> ./sources/"$name"/.uninstall.sh
+		echo '		local fullname="$to"/"$dir"' >> ./sources/"$name"/.uninstall.sh
+		echo '		if [[ -d "$fullname" ]]; then' >> ./sources/"$name"/.uninstall.sh
+		echo '			remove_files "$from"/"$dir" $fullname' >> ./sources/"$name"/.uninstall.sh
+		echo '			if [ "$(ls -A $fullname)" ]; then' >> ./sources/"$name"/.uninstall.sh
+		echo "				echo \"[WARNING] \$dir wasn't uninstalled from \$to because it's not empty\"" >> ./sources/"$name"/.uninstall.sh
+		echo '			else' >> ./sources/"$name"/.uninstall.sh
+		echo '				echo "[SUCCESS] $dir was uninstalled from $to"' >> ./sources/"$name"/.uninstall.sh
+		echo '				rm -r $fullname' >> ./sources/"$name"/.uninstall.sh
+		echo '			fi' >> ./sources/"$name"/.uninstall.sh
+		echo '			cd $from' >> ./sources/"$name"/.uninstall.sh
+		echo '		else' >> ./sources/"$name"/.uninstall.sh
+		echo '			echo "[FAILED] $fullname is not exist"' >> ./sources/"$name"/.uninstall.sh
+		echo '		fi' >> ./sources/"$name"/.uninstall.sh
+		echo '	done' >> ./sources/"$name"/.uninstall.sh
+		echo '	' >> ./sources/"$name"/.uninstall.sh
+		echo '	# Clean labels' >> ./sources/"$name"/.uninstall.sh
+		echo '	> .fl' >> ./sources/"$name"/.uninstall.sh
+		echo '	> .dl' >> ./sources/"$name"/.uninstall.sh
+		echo '	echo ">>> End"' >> ./sources/"$name"/.uninstall.sh
+		echo '}' >> ./sources/"$name"/.uninstall.sh
+		echo '' >> ./sources/"$name"/.uninstall.sh
+		echo 'remove_files $this_path/bin $target_path/bin' >> ./sources/"$name"/.uninstall.sh
+		echo 'remove_files $this_path/include $target_path/include' >> ./sources/"$name"/.uninstall.sh
+		echo 'remove_files $this_path/lib $target_path/lib' >> ./sources/"$name"/.uninstall.sh
+		echo 'remove_files $this_path/share $target_path/share' >> ./sources/"$name"/.uninstall.sh
+		echo '' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd $this_path' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd ../' >> ./sources/"$name"/.uninstall.sh
+		echo 'touch ./.isinstalled' >> ./sources/"$name"/.uninstall.sh
+		echo 'echo "false" > ./.isinstalled' >> ./sources/"$name"/.uninstall.sh
+		echo '' >> ./sources/"$name"/.uninstall.sh
+		echo 'cd $return_path' >> ./sources/"$name"/.uninstall.sh
+		
+		touch ./sources/"$name"/.dependencies
+		
+		touch ./sources/"$name"/.dependent
+		
+		touch ./sources/"$name"/.erasable
+		echo 'false' >> ./sources/"$name"/.erasable
+		
+		touch ./sources/"$name"/.isbuilded
+		echo 'false' >> ./sources/"$name"/.isbuilded
+		
+		touch ./sources/"$name"/.isinstalled
+		echo 'false' >> ./sources/"$name"/.isinstalled
+		
+		touch ./sources/"$name"/.istarget
+		echo 'false' >> ./sources/"$name"/.istarget
+		
+		touch ./sources/"$name"/Dockerfile
+		
+		echo 'FROM base-docker-builder:latest' >> ./sources/"$name"/Dockerfile
+		echo '' >> ./sources/"$name"/Dockerfile
+		echo '## setup image properties' >> ./sources/"$name"/Dockerfile
+		echo 'MAINTAINER aaiwprton <aaiwprtony@yandex.ru>' >> ./sources/"$name"/Dockerfile
+		echo "LABEL   name=\"$name\" \\" >> ./sources/"$name"/Dockerfile
+		echo "		description=\"$name\" \\" >> ./sources/"$name"/Dockerfile
+		echo '		version="1" \' >> ./sources/"$name"/Dockerfile
+		echo '		change-log="v1: Started"' >> ./sources/"$name"/Dockerfile
+		echo '' >> ./sources/"$name"/Dockerfile
+		echo 'ENTRYPOINT ["/home/worker/workroom/sources/auto_build.sh"]' >> ./sources/"$name"/Dockerfile
+		
+	fi
+	
+	echo ">>> End creating project"
+	return 0
+}
+
+function create() {
+	local name="$1"
+	create_project "$name"
+}
+
+## ------ DELETE SCRIPTS ------
+
+function delete_print_help() {
+	echo "delete - the command to completely remove the project from the current build space"
+	echo "Usage: ./bid delete [PROJECT_NAME] [MODE]"
+	echo "Note: mode can have soft and hard values, the default is soft. In hard mode, the dependencies of a current project will also be cleared if no other projects depend on them. The dependency projects themselves will not be removed"
+}
+
+function delete_project() {
+	echo "<<< Begin deleting"
+	local project="$1"
+	local mode="$2"
+	cd $this_path/sources
+	
+	# Args validation
+	if [[ "$project" == '' ]]; then
+		echo "[ERROR] The project name must be specified"
+		return 1
+	else
+		if ! [[ -d $project ]]; then
+			echo "[ERROR] The project $project is not exist"
+			return 1
+		fi
+	fi
+	if [[ "$mode" != '' ]]; then
+		if [[ "$mode" != 'soft' && "$mode" != 'hard' ]]; then
+			echo "[ERROR] The mode must be specified like hard or soft"
+			return 1			
+		fi
+	else
+		mode='soft'
+	fi
+	
+	# Confirmation
+	for (( ; ; )); do
+		local answer=''
+		echo "Do you really sure that you want to delete the project $project? [Y/n]: "
+		read answer
+		answer=$(echo "$answer" | awk '{print tolower($0)}')
+		if [[ $answer == 'y' || $answer == 'yes' ]]; then
+			break
+		elif [[ $answer == 'n' || $answer == 'no' ]]; then
+			echo ">>> End deleting"
+			return 0
+		else
+			continue
+		fi
+	done
+	
+	# Deleting
+	cd $this_path
+	clear "$project" "$mode"
+	cd $this_path/sources
+	rm -rf ./"$project"
+	
+	echo ">>> End deleting"
+	return 0
+}
+
+function delete() {
+	local project="$1"
+	local mode="$2"
+	delete_project "$project" "$mode"
+}
+
+## ------ INIT SCRIPTS ------
+
+function init_print_help() {
+	echo "init - the command to initialize a new build space"
+	echo "Usage: ./bid init"
+	echo "Note: use this command on an empty directory, then start creating your projects using the create command"
+}
+
+function init_build_space {
+	# Make dirs
+	mkdir -p sources
+	mkdir -p builds
+	mkdir -p builds/bin
+	mkdir -p builds/include
+	mkdir -p builds/lib
+	mkdir -p builds/share
+	mkdir -p packs
+	
+	# Make base docker image
+	if [[ -f Dockerfile ]]; then
+		rm ./Dockerfile
+	fi
+	touch Dockerfile
+	
+	echo 'FROM ubuntu:22.04' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo 'SHELL ["/bin/bash", "-c"]' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo '## setup image properties' >> ./Dockerfile
+	echo 'MAINTAINER aaiwprton <aaiwprtony@yandex.ru>' >> ./Dockerfile
+	echo 'LABEL   name="base-docker-builder" \' >> ./Dockerfile
+	echo '	    description="Docker image with a build tools" \' >> ./Dockerfile
+	echo '	    version="1" \' >> ./Dockerfile
+	echo '	    change-log="v1: Started"' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo '## setup users' >> ./Dockerfile
+	echo 'RUN groupadd --gid 1000 worker \' >> ./Dockerfile
+	echo '	&& useradd --uid 1000 --gid worker --shell /bin/bash --create-home worker' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo '## setup user environment' >> ./Dockerfile
+	echo 'RUN mkdir /home/worker/workroom' >> ./Dockerfile
+	echo 'WORKDIR /home/worker/workroom' >> ./Dockerfile
+	echo 'RUN mkdir ./sources ./builds ./installations ./dependencies' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo '## install main tools' >> ./Dockerfile
+	echo 'RUN apt-get update && apt-get -y upgrade \' >> ./Dockerfile
+	echo '	&& apt-get install --no-install-recommends --no-install-suggests -y \' >> ./Dockerfile
+	echo '	nasm gcc g++ gdb make cmake' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo '# setup user mode' >> ./Dockerfile
+	echo 'RUN chown -hR worker:worker /home/worker' >> ./Dockerfile
+	echo 'USER worker' >> ./Dockerfile
+	echo '' >> ./Dockerfile
+	echo 'ENTRYPOINT ["/bin/bash"]' >> ./Dockerfile
+	
+	# Build base docker image
+	docker build -t base-docker-builder ./
+	
+	# Set environment variables
+	for (( ; ; )); do
+		local answer=''
+		echo "Do you want to set LD_LIBRARY_PATH environment variable for current user ? [Y/n]: "
+		read answer
+		answer=$(echo "$answer" | awk '{print tolower($0)}')
+		if [[ $answer == 'y' || $answer == 'yes' ]]; then
+			setenv
+			break
+		elif [[ $answer == 'n' || $answer == 'no' ]]; then
+			break
+		else
+			continue
+		fi
+	done
+}
+	
+function init() {
+	init_build_space
+}
+
+## ------ MANAGE SCRIPTS ------
+
+function manage_print_help() {
+	echo "manage - the command for project management"
+	echo "Usage: ./bid manage [PROJECT_NAME] [COMMAND] [CMD_ARG]"
+	echo "Note: the following commands are available:"
+	echo "	set - to set the project as a target (the target project will not be cleared if the project that depends on it is cleared or deleted in hard mode)"
+	echo "	Usage: ./bid manage [PROJECT_NAME] set [true|false]"
+	echo "	add - to add a dependency (if the dependency is not built and installed in the current build space, it will be built and installed automatically when the project that depends on it is built)"
+	echo "	Usage: ./bid manage [PROJECT_NAME] add [PROJECT_DEPENDENCY_NAME]"
+	echo "	del - to turn off dependency"
+	echo "	Usage: ./bid manage [PROJECT_NAME] del [PROJECT_DEPENDENCY_NAME]"
+	echo "	show - to view project parameters"
+	echo "	Usage: ./bid manage [PROJECT_NAME] show"
+}
+
+function cmd_list() {
+	cd $this_path/sources
+	
+	# Show list of projects
+	local projects_list=$(ls | tr '\n' ' ')
+	
+	# Flipping projects
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local project=$(echo "$projects_list" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $project == '' ]]; then
+			if [[ $projects_list == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				project=$projects_list
+			fi
+		fi
+		
+		# Check if this is directory
+		if ! [[ -d $project ]]; then
+			continue
+		fi
+		
+		# Print this project
+		cd $project
+		if [[ -f .isbuilded ]]; then
+			local isbuilded=$(cat .isbuilded)
+		else
+			local isbuilded="none"
+		fi
+		if [[ -f .isinstalled ]]; then
+			local isinstalled=$(cat .isinstalled)
+		else
+			local isinstalled="none"
+		fi
+		echo "[INFO] The project $project: is builded - $isbuilded; is installed - $isinstalled"
+		cd ../
+		
+	done
+	
+	return 0
+}
+
+function cmd_set() {
+	local project="$1"
+	local value="$2"
+	cd $this_path/sources
+	
+	# Args validation
+	if ! [[ -d $project ]]; then
+		echo "[ERROR] The project $project is not exist"
+		return 1
+	fi
+	if [[ $value != 'true' && $value != 'false' ]]; then
+		echo "[ERROR] The value $value is incorrect (must be true or false)"
+		return 1
+	fi
+	
+	# Writing value
+	cd $project
+	echo "$value" > ./.istarget
+	if [[ $value == 'true' ]]; then
+		echo "[SUCCESS] The project $project was marked as target"
+	else
+		echo "[SUCCESS] The project $project was marked as untarget"
+	fi
+	
+	return 0
+}
+
+function cmd_add() {
+	local project="$1"
+	local value="$2"
+	cd $this_path/sources
+	
+	# Args validation
+	if ! [[ -d $project ]]; then
+		echo "[ERROR] The project $project is not exist"
+		return 1
+	fi
+	if ! [[ -d $value ]]; then
+		echo "[ERROR] The project $value is not exist and cannot be installed as dependencies"
+		return 1
+	fi
+	
+	# Read the dependencies list
+	cd $project
+	if [[ -f .dependencies ]]; then
+		local dep_file=$(cat .dependencies | tr '\n' ' ')
+	else
+		echo "[WARNING] The dependencies list file was not found in $project"
+		touch .dependencies
+		local dep_file=''
+	fi
+	
+	# Flipping dependencies to check is same name already exist
+	local admission=1
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo "$dep_file" | cut -d ' ' -s -f $i)
+		# Exit condition
+		if [[ $dep == '' ]]; then
+			if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$dep_file
+			fi
+		fi
+		
+		# Compare dependency names
+		if [[ "$dep" == "$value" ]]; then
+			admission=0
+			break
+		fi
+	done
+	
+	# Add dependency
+	if [[ $admission != 0 ]]; then
+		echo "[SUCCESS] The dependency $value was added into $project"
+		echo "$value" >> .dependencies
+	else
+		echo "[WARNING] The dependency $value is already exist in $project"
+	fi
+	
+	return 0
+}
+
+function cmd_del() {
+	local project="$1"
+	local value="$2"
+	cd $this_path/sources
+	
+	# Args validation
+	if ! [[ -d $project ]]; then
+		echo "[ERROR] The project $project is not exist"
+		return 1
+	fi
+	
+	# Read the dependencies list
+	cd $project
+	if [[ -f .dependencies ]]; then
+		local dep_file=$(cat .dependencies | tr '\n' ' ')
+	else
+		echo "[WARNING] The dependencies list file was not found in $project"
+		touch .dependencies
+		return 0
+	fi
+	
+	# Flipping dependencies to check is same name already exist
+	local admission=1
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo "$dep_file" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $dep == '' ]]; then
+			if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$dep_file
+			fi
+		fi
+		
+		# Compare dependency names and remove
+		if [[ "$dep" == "$value" ]]; then
+			local cmdargs=$(printf "%dd" $i)
+			sed -i "$cmdargs" .dependencies
+			admission=0
+			break
+		fi
+	done
+	
+	# Print massage
+	if [[ $admission != 0 ]]; then
+		echo "[WARNING] The dependency $dep was not found in $project"
+	else
+		echo "[SUCCESS] The dependency $dep was removed from $project"
+	fi
+	
+	return 0
+}
+
+function cmd_show() {
+	local project="$1"
+	cd $this_path/sources
+	
+	# Args validation
+	if ! [[ -d $project ]]; then
+		echo "[ERROR] The project $project is not exist"
+		return 1
+	fi
+	
+	# Show project's properties
+	cd $project
+	echo "The $project project's properties"
+	echo "Is target: "
+	cat .istarget
+	echo "Is builded: "
+	cat .isbuilded
+	echo "Is installed: "
+	cat .isinstalled
+	echo "Dependents: "
+	cat .dependent
+	echo "Dependencies: "
+	cat .dependencies
+	
+	return 0
+}
+
+function manage_project() {
+	echo "<<< Manage the project $1"
+	local project="$1"
+	local cmd="$2"
+	local arg="$3"
+	cd $this_path
+	
+	# Args validation
+	if [[ "$project" == '' ]]; then
+		echo "[ERROR] The project name must be specified"
+		return 1
+	fi
+	if [[ "$cmd" == '' && "$project" != 'list' ]]; then
+		echo "[ERROR] The command must be specified"
+		return 1
+	fi
+	if [[ "$arg" == '' &&  "$cmd" != 'show' && "$project" != 'list' ]]; then
+		echo "[ERROR] The argument for command $cmd must be specified"
+		return 1
+	fi
+	
+	# Check if it is the list command
+	if [[ $# == 3 && "$1" == 'list' ]]; then
+		cmd_list
+	
+	# select command
+	elif [[ "$cmd" == 'set' ]]; then
+		cmd_set $project $arg
+	elif  [[ "$cmd" == 'add' ]]; then
+		cmd_add $project $arg
+	elif  [[ "$cmd" == 'del' ]]; then
+		cmd_del $project $arg
+	elif  [[ "$cmd" == 'show' ]]; then
+		cmd_show $project
+	else
+		echo "[ERROR] The wrong command was specified"
+		return 1
+	fi
+	
+	echo ">>> End manage"
+	return 0
+}
+
+function manage() {
+	local project="$1"
+	local cmd="$2"
+	local arg="$3"
+	manage_project "$project" "$cmd" "$arg"
+}
+
+## ------ PACK SCRIPTS ------
+
+function pack_print_help() {
+	echo "pack - the command for creating portable packages"
+	echo "Note: this command can be used in two patterns"
+	echo "Usage 1: ./bid pack [PACKET_NAME] add [PROJECT_NAME]"
+	echo "	add - to mark a project from the current build space to be added to this portable package"
+	echo "Usage 2: ./bid pack [COMMAND] [PACKET_NAME]"
+	echo "	new - to initialize a new portable package"
+	echo "	make - for packing a portable package (after that you can find the package with .tar extension in the ./packs/PACKET_NAME/ directory and distribute it)"
+}
+
+function pack_cmd_new() {
+	echo "<<< Begin creating packet $1"
+	local packet_name="$1"
+	cd $this_path
+	
+	# Args validation
+	cd ./packs
+	if [[ -d "$packet_name" ]]; then
+		echo "[ERROR] The packet $packet_name is already exist"
+		return 1
+	fi
+	cd $this_path
+	
+	# Creating packet
+	cd ./packs
+	mkdir $packet_name
+	cd $packet_name
+	touch packet_make_task
+	cd $this_path
+	echo "[SUCCESS] The packet $packet_name was created"
+	
+	echo ">>> End creating"
+	return 0
+}
+
+function pack_cmd_add() {
+	echo "<<< Begin adding project $2 to packet $1"
+	local packet_name="$1"
+	local proj_name="$2"
+	cd $this_path
+	
+	# Args validation
+	cd ./packs
+	if ! [[ -d "$packet_name" ]]; then
+		echo "[ERROR] The packet $packet_name is not exist"
+		echo ">>> End adding"
+		return 1
+	fi
+	cd $this_path/sources
+	if ! [[ -d "$proj_name" ]]; then
+		echo "[ERROR] The project $proj_name is not exist"
+		echo ">>> End adding"
+		return 1
+	fi
+	cd $this_path
+	
+	# Read the packet_make_task
+	cd $this_path/packs/$packet_name
+	if [[ -f packet_make_task ]]; then
+		local make_task=$(cat packet_make_task | tr '\n' ' ')
+	else
+		echo "[WARNING] The packet_make_task file was not found in ./packs/$packet_name"
+		touch packet_make_task
+	fi
+	
+	# Flipping projects to check is same name already exist
+	cd $this_path/packs/$packet_name
+	local admission=1
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local task=$(echo "$make_task" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $task == '' ]]; then
+			if [[ $make_task == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				task=$make_task
+			fi
+		fi
+		
+		# Compare dependency names
+		if [[ "$task" == "$proj_name" ]]; then
+			admission=0
+			break
+		fi
+	done
+	
+	# Add dependency
+	cd $this_path/packs/$packet_name
+	if [[ $admission != 0 ]]; then
+		echo "[SUCCESS] The task $proj_name was added into packet $packet"
+		echo "$proj_name" >> packet_make_task
+	else
+		echo "[WARNING] The task $proj_name is already exist in packet $packet_name"
+	fi
+	cd $this_path
+	
+	echo ">>> End adding"
+	return 0
+}
+
+function pack_archivate_project() {
+	echo "<<< Begin archivate project $3"
+	local packet_name="$1"
+	local archive_name="$2"
+	local project_name="$3"
+	local commit_file_name="$4"
+	cd $this_path
+	
+	# Args validation
+	cd $this_path/packs
+	if ! [[ -d "$packet_name" ]]; then
+		echo "[ERROR] The packet $packet_name is not exist"
+		echo ">>> End archivate with dependencies"
+		return 1
+	fi
+	cd $this_path/packs/$packet_name
+	if ! [[ -f "$archive_name" ]]; then
+		echo "[ERROR] The archive $archive_name is not exist in packet $packet_name"
+		echo ">>> End archivate with dependencies"
+		return 1
+	fi
+	cd $this_path/sources
+	if ! [[ -d "$project_name" ]]; then
+		echo "[ERROR] The project $project_name is not exist"
+		echo ">>> End archivate with dependencies"
+		return 1
+	fi
+	cd $this_path/packs/$packet_name
+	if ! [[ -f "$commit_file_name" ]]; then
+		echo "[ERROR] The cpommit file $commit_file_name is not exist in packet $packet_name"
+		echo ">>> End archivate with dependencies"
+		return 1
+	fi
+	cd $this_path
+	
+	# Read the commit file
+	cd $this_path/packs/$packet_name
+	if [[ -f "$commit_file_name" ]]; then
+		local commit_file=$(cat "$commit_file_name" | tr '\n' ' ')
+	fi
+	cd $this_path
+	
+	# Iterate a commits
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local commit=$(echo "$commit_file" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $commit == '' ]]; then
+			if [[ $commit_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				commit=$commit_file
+			fi
+		fi
+		
+		# Make sure there are no duplicate commits
+		if [[ "$project_name" == "$commit" ]]; then
+			echo "[WARNING] The project $project_name is already archivated in the packet $packet_name"
+			echo ">>> End archivate with dependencies"
+			return 0
+		fi
+	done
+	
+	# Create a directory in the data directory for the project sources and its editable files
+	cd $this_path/packs/$packet_name
+	mkdir -p ./data/$project_name
+	
+	# Copy sources to the data/PROJECT_NAME/PROJECT_NAME directory
+	cp -rv $this_path/sources/$project_name/sources/$project_name $this_path/packs/$packet_name/data/$project_name
+	
+	# Copy the edited files to the data/PROJECT_NAME directory
+	cp -v $this_path/sources/$project_name/sources/auto_build.sh $this_path/packs/$packet_name/data/$project_name/auto_build.sh
+	cp -v $this_path/sources/$project_name/sources/auto_remove.sh $this_path/packs/$packet_name/data/$project_name/auto_remove.sh
+	cp -v $this_path/sources/$project_name/.dependencies $this_path/packs/$packet_name/data/$project_name/.dependencies
+	cp -v $this_path/sources/$project_name/.istarget $this_path/packs/$packet_name/data/$project_name/.istarget
+	cp -v $this_path/sources/$project_name/Dockerfile $this_path/packs/$packet_name/data/$project_name/Dockerfile
+	
+	# Add the data directory to the archive
+	cd $this_path/packs/$packet_name
+	tar -rvf $archive_name data
+	
+	# Make commit for this project
+	echo "$project_name" >> "$commit_file_name"
+	
+	# Clear data directory
+	rm -rv $this_path/packs/$packet_name/data/$project_name
+	cd $this_path
+	
+	echo ">>> End archivate with dependencies"
+	return 0
+}
+
+function pack_archivate_project_with_dependencies() {
+	echo "<<< Begin archivate project $3 with dependencies"
+	local packet_name="$1"
+	local archive_name="$2"
+	local project_name="$3"
+	local commit_file_name="$4"
+	cd $this_path
+	
+	# Args validation
+	cd $this_path/packs
+	if ! [[ -d "$packet_name" ]]; then
+		echo "[ERROR] The packet $packet_name is not exist"
+		return 1
+	fi
+	cd $this_path/packs/$packet_name
+	if ! [[ -f "$archive_name" ]]; then
+		echo "[ERROR] The archive $archive_name is not exist in packet $packet_name"
+		return 1
+	fi
+	cd $this_path/sources
+	if ! [[ -d "$project_name" ]]; then
+		echo "[ERROR] The project $project_name is not exist"
+		return 1
+	fi
+	cd $this_path/packs/$packet_name
+	if ! [[ -f "$commit_file_name" ]]; then
+		echo "[ERROR] The cpommit file $commit_file_name is not exist in packet $packet_name"
+		return 1
+	fi
+	cd $this_path
+	
+	# Read the project dependencies
+	cd $this_path/sources/$project_name
+	if [[ -f .dependencies ]]; then
+		local dep_file=$(cat .dependencies | tr '\n' ' ')
+	else
+		echo "[FAILED] The .dependencies file was not found in project $project_name"
+		local dep_file=''
+		return 0
+	fi
+	cd $this_path
+	
+	# Iterate the project dependencies
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local dep=$(echo "$dep_file" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $dep == '' ]]; then
+			if [[ $dep_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				dep=$dep_file
+			fi
+		fi
+		
+		# For each dependency make a recursive call
+		pack_archivate_project_with_dependencies "$packet_name" "$archive_name" "$dep" "$commit_file_name"
+	done
+	
+	# Read the commit file
+	cd $this_path/packs/$packet_name
+	if [[ -f "$commit_file_name" ]]; then
+		local commit_file=$(cat "$commit_file_name" | tr '\n' ' ')
+	else
+		echo "[FAILED] The commit file was not found in packet $packet_name"
+		local commit_file=''
+		return 0
+	fi
+	cd $this_path
+	
+	# Iterate the commit file
+	local admission=1
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local commit=$(echo "$commit_file" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $commit == '' ]]; then
+			if [[ $commit_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				commit=$commit_file
+			fi
+		fi
+		
+		# Make sure the current project has not been archived previously
+		if [[ "$commit" == "$project_name" ]]; then
+			admission=0
+			break
+		fi
+	done
+	
+	# Archive the project and write the project name to the commit file
+	if [[ $admission != 0 ]]; then
+		echo "[SUCCESS] The project $project_name was archived in the packet $packet_name"
+		pack_archivate_project "$packet_name" "$archive_name" "$project_name" "$commit_file_name"
+	else
+		echo "[WARNING] The project $project_name was already archived in the packet $packet_name"
+	fi
+	
+	echo ">>> End archivate with dependencies"
+	return 0
+}
+
+function pack_cmd_make() {
+	echo "<<< Begin making packet $1"
+	local packet_name="$1"
+	cd $this_path
+	
+	# Args validation
+	cd $this_path/packs
+	if ! [[ -d "$packet_name" ]]; then
+		echo "[ERROR] The packet $packet_name is not exist"
+		return 1
+	fi
+	cd $this_path
+	
+	# Read packet_make_task file
+	cd $this_path/packs/$packet_name
+	if [[ -f packet_make_task ]]; then
+		local task_file=$(cat packet_make_task | tr '\n' ' ')
+	else
+		echo "[FAILED] The packet_make_task file was not found in ./packs/$packet_name"
+		local task_file=''
+		echo ">>> End making"
+		return 0
+	fi
+	cd $this_path
+	
+	# Check that the packet_make_task file is not empty (if empty, exit)
+	cd $this_path/packs/$packet_name
+	if [[ "$task_file" == '' ]]; then
+		echo "[FAILED] The packet_make_task file is empty in ./packs/$packet_name"
+		echo ">>> End making"
+		return 0
+	fi
+	cd $this_path
+	
+	# Create a temporary file to capture archived projects
+	cd $this_path/packs/$packet_name
+	local commit_file_name='temp_commit_file'
+	if [[ -f "$commit_file_name" ]]; then
+		rm "$commit_file_name"
+	fi
+	touch "$commit_file_name"
+	cd $this_path
+	
+	# Create a new archive with empty temporary data
+	cd $this_path/packs/$packet_name
+	mkdir -p ./data
+	local archive_name="$packet_name".tar
+	if [[ -f "$archive_name" ]]; then
+		rm -v "$archive_name"
+	fi
+	tar -cvf $archive_name data
+	cd $this_path
+	
+	# Iterate list of tasks from file
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local task=$(echo "$task_file" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $task == '' ]]; then
+			if [[ $task_file == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				task=$task_file
+			fi
+		fi
+		
+		# Call the project archiving function with dependencies
+		pack_archivate_project_with_dependencies "$packet_name" "$archive_name" "$task" "$commit_file_name"
+	done
+	
+	
+	# Copy bid into archive
+	cd $this_path
+	tar -rvf $this_path/packs/$packet_name/"$packet_name".tar bid
+	
+	# Remove the temporary files
+	cd $this_path/packs/$packet_name
+	rm -rv ./data
+	rm "$commit_file_name"
+	cd $this_path
+		
+	echo ">>> End making"
+	return 0
+}
+
+function pack_cmd_selector() {
+	local arg1="$1"
+	local arg2="$2"
+	local arg3="$3"
+	cd $this_path
+	
+	# Args validation
+	if [[ "$arg1" == '' ]]; then
+		echo "[ERROR] First argument cannot be empty"
+			pack_print_help
+		return 1
+	fi
+	if [[ "$arg2" == '' ]]; then
+		echo "[ERROR] Second argument cannot be empty"
+			pack_print_help
+		return 1
+	fi
+	
+	# Counting arguments
+	local arg_count=2
+	if [[ "$arg3" != '' ]]; then
+		arg_count=3
+	fi
+	
+	# Check packs directory
+	cd $this_path
+	if ! [[ -d ./packs ]]; then
+		mkdir ./packs
+	fi
+	
+	# Selection
+	if [[ $arg_count == 2 ]]; then
+		if [[ "$arg1" == 'new' ]]; then
+			pack_cmd_new "$arg2"
+		elif [[ "$arg1" == 'make' ]]; then
+			pack_cmd_make "$arg2"
+		else
+			echo "[ERROR] Incorrect request pattern with 2 arguments"
+			pack_print_help
+			return 1
+		fi
+	elif [[ $arg_count == 3 ]]; then
+		if [[ "$arg2" == 'add' ]]; then
+			pack_cmd_add "$arg1" "$arg3"
+		else
+			echo "[ERROR] Incorrect request pattern with 2 arguments"
+			pack_print_help
+			return 1
+		fi
+	else
+		echo "[ERROR] Incorrect request pattern. Incorrect arguments number"
+		pack_print_help
+		return 1
+	fi
+	return 0
+}
+
+function pack() {
+	local arg1="$1"
+	local arg2="$2"
+	local arg3="$3"
+	pack_cmd_selector "$arg1" "$arg2" "$arg3"
+}
+
+## ------ UNPACK SCRIPTS ------
+
+function unpack_print_help() {
+	echo "unpack - the command to initialize a configured build space with ready-made projects from the redistributable package"
+	echo "Usage: ./bid unpack [PACKET_NAME]"
+	echo "Note: use this command on an empty directory, then use this build space as you please"
+}
+
+function unpack_to_build_space() {
+	local archive_name=$1
+	local archive_path=$this_path/data
+	
+	# Args validation
+	if [[ "$archive_name" == '' ]]; then
+		echo "[ERROR] The archive name can't be empty"
+		return 1
+	else
+		if ! [[ -f "$archive_name" ]]; then
+			echo "[ERROR] The archive $archive_name is not exist"
+			return 1
+		fi
+	fi
+	
+	# Unpack archive into temp directory
+	if [[ -d "$archive_path" ]]; then
+		echo "The directory $archive_path is already exist. It will be removed. Type \"yes\"(\"y\") to continue: "
+		local user_input
+		read user_input
+		user_input=$(echo "$user_input" | awk '{print tolower($0)}')
+		if [[ "$user_input" == 'y' || "$user_input" == 'yes' ]]; then
+			rm -rvf "$archive_path"
+		else
+			echo "[INFO] Unpacking has been cancelled"
+			return 0
+		fi
+	fi
+	tar -xvf "$archive_name"
+	
+	if ! [[ -d "$archive_path" ]]; then
+		echo "[ERROR] The archive $archive_name is not consist the data directory"
+		return 1
+	fi
+	
+	# Init build space with projects
+	init
+	
+	local projects_list=$(ls "$archive_path" | tr '\n' ' ')
+	
+	# Flipping projects
+	local i
+	for (( i = 1 ; ; i++ )); do
+		local project_name=$(echo "$projects_list" | cut -d ' ' -s -f $i)
+		
+		# Exit condition
+		if [[ $project_name == ''  ]]; then
+			if [[ $projects_list == '' ]] || [[ $i > 1 ]]; then
+				break;
+			else
+				project_name=$projects_list
+			fi
+		fi
+		
+		# Check is this directory
+		if ! [[ -d "$archive_path/$project_name" ]]; then
+			echo "[WARNING] The $project_name is not directory and will't use as project name"
+			continue
+		fi
+		
+		# Create clear project
+		create "$project_name"
+		
+		# Update changeable data: .dependencies, .istarget, Dockerfile, auto_build.sh, auto_remove.sh
+		cp "$archive_path/$project_name/.dependencies" "$this_path/sources/$project_name/.dependencies"
+		cp "$archive_path/$project_name/.istarget" "$this_path/sources/$project_name/.istarget"
+		cp "$archive_path/$project_name/Dockerfile" "$this_path/sources/$project_name/Dockerfile"
+		cp "$archive_path/$project_name/auto_build.sh" "$this_path/sources/$project_name/sources/auto_build.sh"
+		cp "$archive_path/$project_name/auto_remove.sh" "$this_path/sources/$project_name/sources/auto_remove.sh"
+		
+		# Copy sources
+		cp -r "$archive_path/$project_name/$project_name" "$this_path/sources/$project_name/sources/"
+	done
+	
+	# Delete temp data
+	rm -r "$archive_path"
+}
+
+function unpack() {
+	local archive_name=$1
+	unpack_to_build_space "$archive_name"
+}
+
+## ------ HELP SCRIPTS ------
+
+function bid_help() {
+	local cmd="$1"
+	
+	# Select help function	
+	if [[ $cmd == 'build' ]]; then
+		build_print_help
+		return 0
+	elif [[ $cmd == 'clear' ]]; then
+		clear_print_help
+		return 0
+	elif [[ $cmd == 'create' ]]; then
+		create_print_help
+		return 0
+	elif [[ $cmd == 'delete' ]]; then
+		delete_print_help
+		return 0
+	elif [[ $cmd == 'init' ]]; then
+		init_print_help
+		return 0
+	elif [[ $cmd == 'manage' ]]; then
+		manage_print_help
+		return 0
+	elif [[ $cmd == 'pack' ]]; then
+		pack_print_help
+		return 0
+	elif [[ $cmd == 'unpack' ]]; then
+		unpack_print_help
+		return 0
+	elif [[ $cmd == 'setenv' ]]; then
+		setenv_print_help
+		return 0
+	elif [[ $cmd == 'help' ]]; then
+		echo "I'm sorry, I can't help you anymore"
+		return 0
+	fi
+	
+	echo "    The bid script (build in docker) is a system for building C/C++ projects for Linux, the main idea of which is to build inside pre-configured Docker containers to solve the portability problem. The system allows you to create a build space, create new projects, set dependencies between projects, manage projects within the build space, configure and package redistributable packages, and unpack a configured build space with ready-made projects from a redistributable package."
+	echo ""
+	echo "The build system supports the following commands:"
+	echo "	build - to run the build and install the project into the current build space"
+	echo "	clear - to uninstall the assembled project and clean it to the state of the source files"
+	echo "	create - to initialize a new project"
+	echo "	delete - to completely remove the project from the current build space"
+	echo "	init - to initialize a new build space"
+	echo "	manage - for project management"
+	echo "	pack - for creating portable packages"
+	echo "	unpack - to initialize a configured build space with ready-made projects from the redistributable package"
+	echo "	setenv - to set the path to libraries to an environment variable"
+	echo "	help - to demonstrate this help information"
+	echo "To view help for each of the above commands, type ./bid help [COMMAND]"
+}
+
+## ------ BID SCRIPTS ------
+
+function bid_selector() {
+	local cmd=$1
+	local num_args=$#
+	
+	# Args validation
+	if [[ "$cmd" == '' ]]; then
+		echo "[ERROR] The command can't be empty"
+		bid_help
+		return 1
+	fi
+	
+	# Make string with other arguments
+	local other_arg=''
+	local i=0
+	
+	for arg in "$@"; do
+		if [[ $i < 1 ]]; then
+			i=$(( i + 1))
+		else
+			other_args="$other_args $arg"
+		fi
+	done
+	
+	# Select command
+	if [[ "$cmd" == 'build' ]]; then
+		build $other_args
+	elif [[ "$cmd" == 'clear' ]]; then
+		clear $other_args
+	elif [[ "$cmd" == 'create' ]]; then
+		create $other_args
+	elif [[ "$cmd" == 'delete' ]]; then
+		delete $other_args
+	elif [[ "$cmd" == 'init' ]]; then
+		init $other_args
+	elif [[ "$cmd" == 'manage' ]]; then
+		manage $other_args
+	elif [[ "$cmd" == 'pack' ]]; then
+		pack $other_args
+	elif [[ "$cmd" == 'unpack' ]]; then
+		unpack $other_args
+	elif [[ "$cmd" == 'help' ]]; then
+		bid_help $other_args
+	elif [[ "$cmd" == 'setenv' ]]; then
+		setenv
+	else
+		echo "[ERROR] unknow command with args: $other_args"
+		bid_help
+	fi
+}
+
+bid_selector "$@"
+
+cd $return_path
+

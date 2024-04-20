@@ -1,0 +1,18 @@
+
+	_____________________________________________BUILD_IN_DOCKER_____________________________________________
+
+	The bid script (build in docker) is a system for building C/C++ projects for Linux, the main idea of which is to build inside pre-configured Docker containers to solve the portability problem. The system allows you to create a build space, create new projects, set dependencies between projects, manage projects within the build space, configure and package redistributable packages, and unpack a configured build space with ready-made projects from a redistributable package.
+    
+	The build system supports the following commands:
+		build - to run the build and install the project into the current build space
+		clear - to uninstall the assembled project and clean it to the state of the source files
+		create - to initialize a new project
+		delete - to completely remove the project from the current build space
+		init - to initialize a new build space
+		manage - for project management
+		pack - for creating portable packages
+		unpack - to initialize a configured build space with ready-made projects from the redistributable package
+		setenv - to set the path to libraries to an environment variable
+		help - to demonstrate this help information
+	To view help for each of the above commands, type ./bid help [COMMAND]
+
